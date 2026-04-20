@@ -67,7 +67,7 @@ Endpoint_Tcp &Endpoint_Tcp::port(const std::string &port) {
 }
 
 void gvirtus::communicators::from_json(const nlohmann::json &j, Endpoint_Tcp &end) {
-    auto el = j["communicator"][EndpointFactory::index()]["endpoint"];
+    auto el = j["communicator"][0]["endpoint"];
 
     end.suite(el.at("suite"));
     end.protocol(el.at("protocol"));

@@ -1,32 +1,50 @@
-/*
- * GVirtuS - A Virtualization Framework for GPU-Accelerated Applications
- * Written by: Ting-Hui Cheng <tinghc@es.aau.dk>,
- *             Department of Electronic Systems, Aalborg University, Denmark
- */
+#include <cuda.h>
+#include <dlfcn.h>
 
-#include "CudaDr.h"
+#ifdef cuGetProcAddress
+#undef cuGetProcAddress
+#endif
 
-using namespace std;
-
-/*Returns the compute capability of the device*/
-extern "C" CUresult cuGetProcAddress(const char* symbol, void** pfn, int  cudaVersion, 
-                                    cuuint64_t flags, CUdriverProcAddressQueryResult* symbolStatus ) {
-    CudaDrFrontend::Prepare();
-    CudaDrFrontend::AddVariableForArguments(symbol);
-    // CudaDrFrontend::AddDevicePointerForArguments(pfn);
-    CudaDrFrontend::AddVariableForArguments(cudaVersion);
-    CudaDrFrontend::AddVariableForArguments(flags);
-    if (symbolStatus != NULL) {
-        CudaDrFrontend::AddHostPointerForArguments(symbolStatus);
-    }
-    CudaDrFrontend::Execute("cuGetProcAddress");
-    if (CudaDrFrontend::Success()) {
-        *pfn = CudaDrFrontend::GetOutputDevicePointer();
-        if (symbolStatus != NULL) {
-            *symbolStatus = CudaDrFrontend::GetOutputVariable<CUdriverProcAddressQueryResult>();
+extern "C" CUresult cuGetProcAddress_v2(
+    const char* symbol,
+    void** pfn,
+    int cudaVersion,
+    cuuint64_t flags,
+    CUdriverProcAddressQueryResult* symbolStatus)
+{
+    if (!symbol || !pfn) {
+        if (symbolStatus) {
+            *symbolStatus = CU_GET_PROC_ADDRESS_SYMBOL_NOT_FOUND;
         }
+        return CUDA_ERROR_INVALID_VALUE;
     }
-    return CudaDrFrontend::GetExitCode();
+
+    dlerror();
+    void* fp = dlsym(RTLD_DEFAULT, symbol);
+
+    if (!fp) {
+        if (symbolStatus) {
+            *symbolStatus = CU_GET_PROC_ADDRESS_SYMBOL_NOT_FOUND;
+        }
+        *pfn = nullptr;
+        return CUDA_ERROR_NOT_FOUND;
+    }
+
+    *pfn = fp;
+
+    if (symbolStatus) {
+        *symbolStatus = CU_GET_PROC_ADDRESS_SUCCESS;
+    }
+
+    return CUDA_SUCCESS;
 }
 
-
+extern "C" CUresult cuGetProcAddress(
+    const char* symbol,
+    void** pfn,
+    int cudaVersion,
+    cuuint64_t flags)
+{
+    CUdriverProcAddressQueryResult symbolStatus{};
+    return cuGetProcAddress_v2(symbol, pfn, cudaVersion, flags, &symbolStatus);
+}

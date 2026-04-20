@@ -82,7 +82,7 @@ class EndpointFactory {
                 "EndpointFactory::get_endpoint(): Your suite is not compatible!");
         }
 
-        ind_endpoint++;
+        //ind_endpoint++;
 
         j.clear();
         ifs.close();

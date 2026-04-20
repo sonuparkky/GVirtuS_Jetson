@@ -30,16 +30,8 @@ function(configure_cudadr_plugin)
 
     message(STATUS "cudaDr library found at ${CUDADR_LIBRARY}, adding plugins/cudadr")
 
-    set(CUDADR_VERSION "${CUDADR_LIBRARY}")
-    while(IS_SYMLINK "${CUDADR_VERSION}")
-        message(STATUS "${CUDADR_VERSION}")
-        execute_process(COMMAND readlink "${CUDADR_VERSION}"
-            OUTPUT_VARIABLE CUDADR_VERSION
-            OUTPUT_STRIP_TRAILING_WHITESPACE
-        )
-    endwhile()
-    message(STATUS "Resolved CUDADR version: ${CUDADR_VERSION}")
-    string(REGEX REPLACE ".*\\.so\\.([0-9]+(\\.[0-9]+)*)" "\\1" CUDADR_VERSION "${CUDADR_VERSION}")
+    set(CUDADR_VERSION "1")
+    message(STATUS "Forced CUDADR version: ${CUDADR_VERSION}")
 
 
     gvirtus_add_backend(cuda ${CUDADR_VERSION}
