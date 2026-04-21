@@ -26,7 +26,7 @@ if ! ldconfig -p | grep -q 'liblog4cplus-2.0.so.3'; then
   install_if_missing liblog4cplus-2.0.5
 fi
 
-HOST_IP="${GVIRTUS_HOST_IP:-$(ip route | awk '/default/ {print $3; exit}') }"
+HOST_IP="${GVIRTUS_HOST_IP:-$(ip route | awk '/default/ {print $3; exit}')}"
 mkdir -p /tmp/gvirtus-libcuda-only
 ln -sf "$GVIRTUS_HOME/lib/frontend/libcuda.so" /tmp/gvirtus-libcuda-only/libcuda.so
 if [ -e "$GVIRTUS_HOME/lib/frontend/libcuda.so.1" ]; then

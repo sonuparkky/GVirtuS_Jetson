@@ -136,3 +136,113 @@ extern "C" __host__ cudaError_t CUDARTAPI cudaGraphUpload(cudaGraphExec_t graphE
     
     return CudaRtFrontend::GetExitCode();
 }
+
+extern "C" __host__ cudaError_t CUDARTAPI cudaGraphNodeGetDependencies(cudaGraphNode_t,
+                                                                        cudaGraphNode_t*,
+                                                                        size_t* pNumDependencies) {
+    if (pNumDependencies != nullptr) {
+        *pNumDependencies = 0;
+    }
+    return cudaSuccess;
+}
+
+extern "C" __host__ cudaError_t CUDARTAPI cudaUserObjectCreate(cudaUserObject_t* object_out,
+                                                               void* ptr,
+                                                               cudaHostFn_t,
+                                                               unsigned int,
+                                                               unsigned int) {
+    if (object_out != nullptr) {
+        *object_out = reinterpret_cast<cudaUserObject_t>(ptr);
+    }
+    return cudaSuccess;
+}
+
+extern "C" __host__ cudaError_t CUDARTAPI cudaGraphRetainUserObject(cudaGraph_t,
+                                                                    cudaUserObject_t,
+                                                                    unsigned int,
+                                                                    unsigned int) {
+    return cudaSuccess;
+}
+
+extern "C" __host__ cudaError_t CUDARTAPI cudaGraphAddDependencies(cudaGraph_t,
+                                                                   const cudaGraphNode_t*,
+                                                                   const cudaGraphNode_t*,
+                                                                   size_t) {
+    return cudaSuccess;
+}
+
+extern "C" __host__ cudaError_t CUDARTAPI cudaGraphAddDependencies_v2(cudaGraph_t,
+                                                                      const cudaGraphNode_t*,
+                                                                      const cudaGraphNode_t*,
+                                                                      const cudaGraphEdgeData*,
+                                                                      size_t) {
+    return cudaSuccess;
+}
+
+extern "C" __host__ cudaError_t CUDARTAPI cudaGraphAddEventRecordNode(cudaGraphNode_t* pGraphNode,
+                                                                      cudaGraph_t,
+                                                                      const cudaGraphNode_t*,
+                                                                      size_t,
+                                                                      cudaEvent_t) {
+    if (pGraphNode != nullptr) {
+        *pGraphNode = nullptr;
+    }
+    return cudaSuccess;
+}
+
+extern "C" __host__ cudaError_t CUDARTAPI cudaStreamGetCaptureInfo_v3(cudaStream_t,
+                                                                      enum cudaStreamCaptureStatus* captureStatus_out,
+                                                                      unsigned long long* id_out,
+                                                                      cudaGraph_t* graph_out,
+                                                                      const cudaGraphNode_t** dependencies_out,
+                                                                      const cudaGraphEdgeData** edgeData_out,
+                                                                      size_t* numDependencies_out) {
+    if (captureStatus_out != nullptr) {
+        *captureStatus_out = cudaStreamCaptureStatusNone;
+    }
+    if (id_out != nullptr) {
+        *id_out = 0;
+    }
+    if (graph_out != nullptr) {
+        *graph_out = nullptr;
+    }
+    if (dependencies_out != nullptr) {
+        *dependencies_out = nullptr;
+    }
+    if (edgeData_out != nullptr) {
+        *edgeData_out = nullptr;
+    }
+    if (numDependencies_out != nullptr) {
+        *numDependencies_out = 0;
+    }
+    return cudaSuccess;
+}
+
+extern "C" __host__ cudaError_t CUDARTAPI cudaStreamUpdateCaptureDependencies(cudaStream_t,
+                                                                              cudaGraphNode_t*,
+                                                                              size_t,
+                                                                              unsigned int) {
+    return cudaSuccess;
+}
+
+extern "C" __host__ cudaError_t CUDARTAPI cudaStreamUpdateCaptureDependencies_v2(cudaStream_t,
+                                                                                 cudaGraphNode_t*,
+                                                                                 const cudaGraphEdgeData*,
+                                                                                 size_t,
+                                                                                 unsigned int) {
+    return cudaSuccess;
+}
+
+extern "C" __host__ cudaError_t CUDARTAPI cudaMallocFromPoolAsync(void** ptr,
+                                                                  size_t size,
+                                                                  cudaMemPool_t,
+                                                                  cudaStream_t stream) {
+    return cudaMallocAsync(ptr, size, stream);
+}
+
+extern "C" __host__ cudaError_t cudaGetFuncBySymbol(cudaFunction_t* functionPtr, const void*) {
+    if (functionPtr != nullptr) {
+        *functionPtr = nullptr;
+    }
+    return cudaErrorNotSupported;
+}

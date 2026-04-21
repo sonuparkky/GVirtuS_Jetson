@@ -30,6 +30,8 @@
 #define CUDADRFRONTEND_H
 
 #include <cuda.h>
+#include <cstdlib>
+#include <cstdio>
 #include <gvirtus/frontend/Frontend.h>
 
 class CudaDrFrontend {
@@ -37,6 +39,9 @@ class CudaDrFrontend {
     static inline void Execute(const char *routine,
                                const gvirtus::communicators::Buffer *input_buffer = nullptr) {
         gvirtus::frontend::Frontend::GetFrontend()->Execute(routine, input_buffer);
+        if (std::getenv("GVIRTUS_CUDADR_TRACE_CALLS") != nullptr) {
+            std::fprintf(stderr, "GVirtuS CudaDr call %s -> %d\n", routine, GetExitCode());
+        }
     }
 
     /**
