@@ -28,9 +28,14 @@
  */
 
 #include <CudaRt_internal.h>
+#include <dlfcn.h>
 #include <lz4.h>
 
+#include <cstdint>
 #include <cstdio>
+#include <sstream>
+#include <sys/stat.h>
+#include <sys/types.h>
 
 #include "CudaRt.h"
 
@@ -145,6 +150,68 @@ void writeCudaFatBinaryToFile(const void *data, const unsigned long long int fat
     fclose(file);
 }
 
+void maybeDumpCudaFatBinary(const void *data, const unsigned long long int fatBinSize) {
+    const char *dumpDir = getenv("GVIRTUS_DUMP_FATBIN_DIR");
+    if (!dumpDir || dumpDir[0] == '\0') return;
+
+    struct stat st;
+    if (stat(dumpDir, &st) != 0 || !S_ISDIR(st.st_mode)) {
+        cerr << "*** Warning: GVIRTUS_DUMP_FATBIN_DIR is not a directory: " << dumpDir << endl;
+        return;
+    }
+
+    static unsigned long dumpIndex = 0;
+    std::ostringstream path;
+    path << dumpDir << "/fatbin_" << dumpIndex++ << ".bin";
+    writeCudaFatBinaryToFile(data, fatBinSize, path.str());
+}
+
+bool decompressFatBinaryPayload(const char *compressed_data, int compressed_size,
+                                unsigned long long uncompressed_size, std::vector<char> &output,
+                                std::ostream &log) {
+    static const unsigned char zstdMagic[4] = {0x28, 0xB5, 0x2F, 0xFD};
+    output.resize(uncompressed_size);
+
+    if (compressed_size >= 4 &&
+        memcmp(compressed_data, zstdMagic, sizeof(zstdMagic)) == 0) {
+        typedef size_t (*ZSTD_decompress_fn)(void *, size_t, const void *, size_t);
+        typedef unsigned int (*ZSTD_isError_fn)(size_t);
+        typedef const char *(*ZSTD_getErrorName_fn)(size_t);
+
+        static void *zstdHandle = dlopen("libzstd.so.1", RTLD_LAZY | RTLD_LOCAL);
+        static ZSTD_decompress_fn zstdDecompress =
+            zstdHandle ? (ZSTD_decompress_fn)dlsym(zstdHandle, "ZSTD_decompress") : nullptr;
+        static ZSTD_isError_fn zstdIsError =
+            zstdHandle ? (ZSTD_isError_fn)dlsym(zstdHandle, "ZSTD_isError") : nullptr;
+        static ZSTD_getErrorName_fn zstdGetErrorName =
+            zstdHandle ? (ZSTD_getErrorName_fn)dlsym(zstdHandle, "ZSTD_getErrorName") : nullptr;
+
+        if (!zstdDecompress || !zstdIsError || !zstdGetErrorName) {
+            log << "*** Warning: ZSTD payload detected but libzstd symbols are unavailable" << endl;
+            return false;
+        }
+
+        size_t decompressed_size =
+            zstdDecompress(output.data(), output.size(), compressed_data, compressed_size);
+        if (zstdIsError(decompressed_size)) {
+            log << "*** Warning: ZSTD decompression failed: "
+                << zstdGetErrorName(decompressed_size) << endl;
+            return false;
+        }
+        if (decompressed_size != output.size()) output.resize(decompressed_size);
+        return true;
+    }
+
+    int decompressed_size =
+        LZ4_decompress_safe(compressed_data, output.data(), compressed_size, output.size());
+    if (decompressed_size < 0) {
+        log << "*** Warning: LZ4 decompression failed with code " << decompressed_size << endl;
+        return false;
+    }
+    if ((unsigned long long)decompressed_size != uncompressed_size) output.resize(decompressed_size);
+    return true;
+}
+
 /*
  Routines not found in the cuda's header files.
  KEEP THEM WITH CARE
@@ -166,9 +233,7 @@ extern "C" __host__ void **__cudaRegisterFatBinary(void *fatCubin) {
     // cout << "Fat binary header size: " << fatBinHdr->headerSize << endl;
     // cout << "Fat binary size: " << fatBinHdr->fatSize << endl;
 
-    // only for debugging purposes
-    // writeCudaFatBinaryToFile(fatBinHdr, fatBinHdr->headerSize + fatBinHdr->fatSize,
-    // "fat_binary.cubin");
+    maybeDumpCudaFatBinary(fatBinHdr, fatBinHdr->headerSize + fatBinHdr->fatSize);
 
     uint8_t *data_ptr = (uint8_t *)bin->data + fatBinHdr->headerSize;
     size_t remaining_size = fatBinHdr->fatSize;
@@ -177,8 +242,9 @@ extern "C" __host__ void **__cudaRegisterFatBinary(void *fatCubin) {
     while (remaining_size > 0) {
         fatBinData_t *fatBinData = (fatBinData_t *)data_ptr;
         if (fatBinData->version != 0x0101 || (fatBinData->kind != 1 && fatBinData->kind != 2)) {
-            cerr << "*** Error: Invalid fat binary data version or kind" << endl;
-            return nullptr;  // Not a valid fat binary data
+            cerr << "*** Warning: Unsupported fat binary data version or kind; skipping metadata parse"
+                 << endl;
+            break;
         }
 
         // cout << "Processing fat binary data of kind: " << fatBinData->kind
@@ -191,17 +257,10 @@ extern "C" __host__ void **__cudaRegisterFatBinary(void *fatCubin) {
             int compressed_size = fatBinData->payloadSize;
             data_ptr += fatBinData->paddedPayloadSize;
 
-            // Prepare output buffer with the expected decompressed size
-            cubin.resize(fatBinData->uncompressedPayload);
-
-            // Decompress - LZ4_decompress_safe returns decompressed size or < 0 on error
-            int decompressed_size = LZ4_decompress_safe(
-                compressed_data, cubin.data(), compressed_size, fatBinData->uncompressedPayload);
-
-            if (decompressed_size < 0) {
-                cerr << "*** Error: LZ4 decompression failed with code " << decompressed_size
-                     << endl;
-                return nullptr;  // Decompression failed
+            if (!decompressFatBinaryPayload(compressed_data, compressed_size,
+                                            fatBinData->uncompressedPayload, cubin, cerr)) {
+                cerr << "*** Warning: skipping metadata parse" << endl;
+                break;
             }
         } else {
             cubin.resize(fatBinData->paddedPayloadSize);
@@ -211,18 +270,19 @@ extern "C" __host__ void **__cudaRegisterFatBinary(void *fatCubin) {
 
         if (fatBinData->kind == 2) {
             if (memcmp(cubin.data(), ELF_MAGIC, ELF_MAGIC_SIZE) != 0) {
-                cerr << "*** Error: Invalid ELF magic number in fat binary" << endl;
-                return nullptr;  // Not a valid ELF file
+                cerr << "*** Warning: Invalid ELF magic number in fat binary; skipping metadata parse"
+                     << endl;
+                break;
             }
             Elf64_Ehdr *eh = (Elf64_Ehdr *)(cubin.data());
 
             Elf64_Shdr *sh_table = copySectionHeaders(eh);
-            if (!sh_table) return nullptr;
+            if (!sh_table) break;
 
             char *sh_str = copySectionHeaderStrTable(eh, sh_table);
             if (!sh_str) {
                 free(sh_table);
-                return nullptr;
+                break;
             }
 
             parseNvInfoKParams(eh, sh_table, sh_str);
@@ -269,6 +329,7 @@ extern "C" __host__ void __cudaRegisterFunction(void **fatCubinHandle, const cha
                                                 char *deviceFun, const char *deviceName,
                                                 int thread_limit, uint3 *tid, uint3 *bid,
                                                 dim3 *bDim, dim3 *gDim, int *wSize) {
+    char *originalDeviceFun = deviceFun;
     CudaRtFrontend::Prepare();
     CudaRtFrontend::AddStringForArguments(CudaUtil::MarshalHostPointer(fatCubinHandle));
 
@@ -284,12 +345,22 @@ extern "C" __host__ void __cudaRegisterFunction(void **fatCubinHandle, const cha
 
     CudaRtFrontend::Execute("cudaRegisterFunction");
 
-    deviceFun = CudaRtFrontend::GetOutputString();
-    tid = CudaRtFrontend::GetOutputHostPointer<uint3>();
-    bid = CudaRtFrontend::GetOutputHostPointer<uint3>();
-    bDim = CudaRtFrontend::GetOutputHostPointer<dim3>();
-    gDim = CudaRtFrontend::GetOutputHostPointer<dim3>();
-    wSize = CudaRtFrontend::GetOutputHostPointer<int>();
+    if (CudaRtFrontend::Success()) {
+        try {
+            deviceFun = CudaRtFrontend::GetOutputString();
+            tid = CudaRtFrontend::GetOutputHostPointer<uint3>();
+            bid = CudaRtFrontend::GetOutputHostPointer<uint3>();
+            bDim = CudaRtFrontend::GetOutputHostPointer<dim3>();
+            gDim = CudaRtFrontend::GetOutputHostPointer<dim3>();
+            wSize = CudaRtFrontend::GetOutputHostPointer<int>();
+        } catch (const std::exception &e) {
+            cerr << "*** Warning: cudaRegisterFunction output parse failed: " << e.what()
+                 << "; falling back to original device function mapping" << endl;
+            deviceFun = originalDeviceFun;
+        }
+    } else {
+        deviceFun = originalDeviceFun;
+    }
 
     CudaRtFrontend::addHost2DeviceFunc((void *)hostFun, deviceFun);
 }

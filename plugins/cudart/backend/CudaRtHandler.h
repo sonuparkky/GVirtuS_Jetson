@@ -143,6 +143,7 @@ class CudaRtHandler : public gvirtus::backend::Handler {
     typedef std::shared_ptr<Result> (*CudaRoutineHandler)(CudaRtHandler *, std::shared_ptr<Buffer>);
     static std::map<std::string, CudaRoutineHandler> *mspHandlers;
     std::map<std::string, void **> *mpFatBinary;
+    void **mpLastFatBinary;
     std::map<std::string, std::string> *mpDeviceFunction;
     std::map<std::string, std::string> *mpVar;
     std::map<std::string, cudaTextureObject_t *> *mpTexture;

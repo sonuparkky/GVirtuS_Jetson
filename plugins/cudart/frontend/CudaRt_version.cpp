@@ -27,14 +27,45 @@
  */
 
 #include "CudaRt.h"
+#include <cuda.h>
+#include <dlfcn.h>
 
 using namespace std;
 
 extern "C" __host__ cudaError_t CUDARTAPI cudaDriverGetVersion(int *driverVersion) {
-    CudaRtFrontend::Prepare();
-    CudaRtFrontend::Execute("cudaDriverGetVersion");
-    if (CudaRtFrontend::Success()) *driverVersion = CudaRtFrontend::GetOutputVariable<int>();
-    return CudaRtFrontend::GetExitCode();
+    if (driverVersion == nullptr) {
+        return cudaErrorInvalidValue;
+    }
+
+    using CuDriverGetVersionFn = CUresult (*)(int *);
+
+    dlerror();
+    void *symbol = dlsym(RTLD_DEFAULT, "cuDriverGetVersion");
+    if (symbol == nullptr) {
+        symbol = dlsym(RTLD_DEFAULT, "cuDriverGetVersion_v2");
+    }
+    if (symbol == nullptr) {
+        void *cudaHandle = dlopen("libcuda.so.1", RTLD_LAZY | RTLD_LOCAL);
+        if (cudaHandle != nullptr) {
+            symbol = dlsym(cudaHandle, "cuDriverGetVersion");
+            if (symbol == nullptr) {
+                symbol = dlsym(cudaHandle, "cuDriverGetVersion_v2");
+            }
+        }
+    }
+    if (symbol == nullptr) {
+        *driverVersion = 0;
+        return cudaErrorInsufficientDriver;
+    }
+
+    CUresult driverExit =
+        reinterpret_cast<CuDriverGetVersionFn>(symbol)(driverVersion);
+    if (driverExit == CUDA_SUCCESS) {
+        return cudaSuccess;
+    }
+
+    *driverVersion = 0;
+    return cudaErrorInsufficientDriver;
 }
 
 extern "C" __host__ cudaError_t CUDARTAPI cudaRuntimeGetVersion(int *runtimeVersion) {

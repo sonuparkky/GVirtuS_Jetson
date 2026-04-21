@@ -29,12 +29,60 @@
 #include <CudaRt_internal.h>
 #include <CudaUtil.h>
 #include <cuda.h>
+#include <dlfcn.h>
 #include <lz4.h>
 
+#include <cstdint>
 #include "CudaRtHandler.h"
 
 using namespace std;
 using namespace log4cplus;
+
+bool decompressFatBinaryPayload(const char *compressed_data, int compressed_size,
+                                unsigned long long uncompressed_size, std::vector<char> &output,
+                                std::ostream &log) {
+    static const unsigned char zstdMagic[4] = {0x28, 0xB5, 0x2F, 0xFD};
+    output.resize(uncompressed_size);
+
+    if (compressed_size >= 4 &&
+        memcmp(compressed_data, zstdMagic, sizeof(zstdMagic)) == 0) {
+        typedef size_t (*ZSTD_decompress_fn)(void *, size_t, const void *, size_t);
+        typedef unsigned int (*ZSTD_isError_fn)(size_t);
+        typedef const char *(*ZSTD_getErrorName_fn)(size_t);
+
+        static void *zstdHandle = dlopen("libzstd.so.1", RTLD_LAZY | RTLD_LOCAL);
+        static ZSTD_decompress_fn zstdDecompress =
+            zstdHandle ? (ZSTD_decompress_fn)dlsym(zstdHandle, "ZSTD_decompress") : nullptr;
+        static ZSTD_isError_fn zstdIsError =
+            zstdHandle ? (ZSTD_isError_fn)dlsym(zstdHandle, "ZSTD_isError") : nullptr;
+        static ZSTD_getErrorName_fn zstdGetErrorName =
+            zstdHandle ? (ZSTD_getErrorName_fn)dlsym(zstdHandle, "ZSTD_getErrorName") : nullptr;
+
+        if (!zstdDecompress || !zstdIsError || !zstdGetErrorName) {
+            log << "*** Warning: ZSTD payload detected but libzstd symbols are unavailable" << endl;
+            return false;
+        }
+
+        size_t decompressed_size =
+            zstdDecompress(output.data(), output.size(), compressed_data, compressed_size);
+        if (zstdIsError(decompressed_size)) {
+            log << "*** Warning: ZSTD decompression failed: "
+                << zstdGetErrorName(decompressed_size) << endl;
+            return false;
+        }
+        if (decompressed_size != output.size()) output.resize(decompressed_size);
+        return true;
+    }
+
+    int decompressed_size =
+        LZ4_decompress_safe(compressed_data, output.data(), compressed_size, output.size());
+    if (decompressed_size < 0) {
+        log << "*** Warning: LZ4 decompression failed with code " << decompressed_size << endl;
+        return false;
+    }
+    if ((unsigned long long)decompressed_size != uncompressed_size) output.resize(decompressed_size);
+    return true;
+}
 
 extern "C" {
 void **__cudaRegisterFatBinary(void *fatCubin);
@@ -154,27 +202,21 @@ CUDA_ROUTINE_HANDLER(RegisterFatBinary) {
         std::vector<char> cubin;
         while (remaining_size > 0) {
             fatBinData_t *fatBinData = (fatBinData_t *)data_ptr;
+            if (fatBinData->version != 0x0101 || (fatBinData->kind != 1 && fatBinData->kind != 2)) {
+                LOG4CPLUS_WARN(pThis->GetLogger(),
+                               "*** Warning: Unsupported fat binary data version or kind; skipping metadata parse");
+                break;
+            }
             data_ptr += fatBinData->headerSize;
 
             if (fatBinData->uncompressedPayload != 0) {
                 uint8_t *compressed_data = data_ptr;
                 int compressed_size = fatBinData->payloadSize;
 
-                // cout << "Uncompressed payload: " <<
-                // fatBinData->uncompressedPayload << endl; Prepare output
-                // buffer with the expected decompressed size
-                cubin.resize(fatBinData->uncompressedPayload);
-
-                // Decompress - LZ4_decompress_safe returns decompressed size or
-                // < 0 on error
-                int decompressed_size =
-                    LZ4_decompress_safe((const char *)compressed_data, cubin.data(),
-                                        compressed_size, fatBinData->uncompressedPayload);
-                if (decompressed_size < 0) {
-                    LOG4CPLUS_ERROR(
-                        pThis->GetLogger(),
-                        "*** Error: LZ4 decompression failed with code " << decompressed_size);
-                    return nullptr;  // Decompression failed
+                if (!decompressFatBinaryPayload((const char *)compressed_data, compressed_size,
+                                                fatBinData->uncompressedPayload, cubin, cerr)) {
+                    LOG4CPLUS_WARN(pThis->GetLogger(), "*** Warning: skipping metadata parse");
+                    break;
                 }
                 // Advance pointer for next usage (if needed)
                 data_ptr += fatBinData->paddedPayloadSize;
@@ -187,18 +229,19 @@ CUDA_ROUTINE_HANDLER(RegisterFatBinary) {
             // cout << "kind " << fatBinData->kind << endl;
             if (fatBinData->kind == 2) {
                 if (memcmp(cubin.data(), ELF_MAGIC, ELF_MAGIC_SIZE) != 0) {
-                    cerr << "*** Error: Invalid ELF magic number in fat binary" << endl;
-                    return nullptr;  // Not a valid ELF file
+                    LOG4CPLUS_WARN(pThis->GetLogger(),
+                                   "*** Warning: Invalid ELF magic number in fat binary; skipping metadata parse");
+                    break;
                 }
                 Elf64_Ehdr *eh = (Elf64_Ehdr *)(cubin.data());
 
                 Elf64_Shdr *sh_table = copySectionHeaders(eh);
-                if (!sh_table) return nullptr;
+                if (!sh_table) break;
 
                 char *sh_str = copySectionHeaderStrTable(eh, sh_table);
                 if (!sh_str) {
                     free(sh_table);
-                    return nullptr;
+                    break;
                 }
 
                 parseNvInfoSections(eh, sh_table, sh_str, pThis);
@@ -245,18 +288,25 @@ CUDA_ROUTINE_HANDLER(UnregisterFatBinary) {
 }
 
 CUDA_ROUTINE_HANDLER(RegisterFunction) {
+    char *deviceFun = nullptr;
+    const char *hostfun = nullptr;
+    uint3 *tid = nullptr;
+    uint3 *bid = nullptr;
+    dim3 *bDim = nullptr;
+    dim3 *gDim = nullptr;
+    int *wSize = nullptr;
     try {
         char *handler = input_buffer->AssignString();
         void **fatCubinHandle = pThis->GetFatBinary(handler);
-        const char *hostfun = (const char *)(input_buffer->Get<pointer_t>());
-        char *deviceFun = strdup(input_buffer->AssignString());
+        hostfun = (const char *)(input_buffer->Get<pointer_t>());
+        deviceFun = strdup(input_buffer->AssignString());
         const char *deviceName = strdup(input_buffer->AssignString());
         int thread_limit = input_buffer->Get<int>();
-        uint3 *tid = input_buffer->Assign<uint3>();
-        uint3 *bid = input_buffer->Assign<uint3>();
-        dim3 *bDim = input_buffer->Assign<dim3>();
-        dim3 *gDim = input_buffer->Assign<dim3>();
-        int *wSize = input_buffer->Assign<int>();
+        tid = input_buffer->Assign<uint3>();
+        bid = input_buffer->Assign<uint3>();
+        bDim = input_buffer->Assign<dim3>();
+        gDim = input_buffer->Assign<dim3>();
+        wSize = input_buffer->Assign<int>();
         __cudaRegisterFunction(fatCubinHandle, hostfun, deviceFun, deviceName, thread_limit, tid,
                                bid, bDim, gDim, wSize);
 
@@ -281,6 +331,18 @@ CUDA_ROUTINE_HANDLER(RegisterFunction) {
         return std::make_shared<Result>(cudaSuccess, output_buffer);
     } catch (const std::exception &e) {
         cerr << e.what() << endl;
+        if (hostfun != nullptr && deviceFun != nullptr && tid != nullptr && bid != nullptr &&
+            bDim != nullptr && gDim != nullptr && wSize != nullptr) {
+            std::shared_ptr<Buffer> output_buffer = std::make_shared<Buffer>();
+            output_buffer->AddString(deviceFun);
+            output_buffer->Add(tid);
+            output_buffer->Add(bid);
+            output_buffer->Add(bDim);
+            output_buffer->Add(gDim);
+            output_buffer->Add(wSize);
+            pThis->addHost2DeviceFunc((void *)hostfun, deviceFun);
+            return std::make_shared<Result>(cudaSuccess, output_buffer);
+        }
         return std::make_shared<Result>(cudaErrorMemoryAllocation);
     }
 }

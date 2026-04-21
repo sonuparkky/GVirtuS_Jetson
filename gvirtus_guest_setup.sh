@@ -66,7 +66,7 @@ JSON
 export GVIRTUS_HOME
 export GVIRTUS_CONFIG="$CONFIG"
 unset LD_LIBRARY_PATH
-export LD_LIBRARY_PATH="$GVIRTUS_HOME/lib:/tmp/gvirtus-libcuda-only:/usr/local/cuda/lib64:/usr/lib/aarch64-linux-gnu:/lib/aarch64-linux-gnu"
+export LD_LIBRARY_PATH="$GVIRTUS_HOME/lib/frontend:$GVIRTUS_HOME/lib:/tmp/gvirtus-libcuda-only:/usr/local/cuda/lib64:/usr/lib/aarch64-linux-gnu:/lib/aarch64-linux-gnu"
 
 cat <<MSG
 [guest] GVIRTUS_HOME=$GVIRTUS_HOME
@@ -110,6 +110,72 @@ print('cuda available:', torch.cuda.is_available())
 print('device count:', torch.cuda.device_count())
 PY
     ;;
+  versions)
+    python3 - <<'PY'
+import ctypes
+
+cuda = ctypes.CDLL('libcuda.so.1')
+rt = ctypes.CDLL('libcudart.so.12')
+
+cuInit = cuda.cuInit
+cuInit.argtypes = [ctypes.c_uint]
+cuInit.restype = ctypes.c_int
+
+cuDriverGetVersion = cuda.cuDriverGetVersion
+cuDriverGetVersion.argtypes = [ctypes.POINTER(ctypes.c_int)]
+cuDriverGetVersion.restype = ctypes.c_int
+
+cudaDriverGetVersion = rt.cudaDriverGetVersion
+cudaDriverGetVersion.argtypes = [ctypes.POINTER(ctypes.c_int)]
+cudaDriverGetVersion.restype = ctypes.c_int
+
+cudaRuntimeGetVersion = rt.cudaRuntimeGetVersion
+cudaRuntimeGetVersion.argtypes = [ctypes.POINTER(ctypes.c_int)]
+cudaRuntimeGetVersion.restype = ctypes.c_int
+
+v1 = ctypes.c_int(-1)
+v2 = ctypes.c_int(-1)
+v3 = ctypes.c_int(-1)
+
+print('cuInit =', cuInit(0))
+print('cuDriverGetVersion =', cuDriverGetVersion(ctypes.byref(v1)), 'value =', v1.value)
+print('cudaDriverGetVersion =', cudaDriverGetVersion(ctypes.byref(v2)), 'value =', v2.value)
+print('cudaRuntimeGetVersion =', cudaRuntimeGetVersion(ctypes.byref(v3)), 'value =', v3.value)
+PY
+    ;;
+  version-driver)
+    python3 - <<'PY'
+import ctypes
+
+cuda = ctypes.CDLL('libcuda.so.1')
+cuInit = cuda.cuInit
+cuInit.argtypes = [ctypes.c_uint]
+cuInit.restype = ctypes.c_int
+cuDriverGetVersion = cuda.cuDriverGetVersion
+cuDriverGetVersion.argtypes = [ctypes.POINTER(ctypes.c_int)]
+cuDriverGetVersion.restype = ctypes.c_int
+v = ctypes.c_int(-1)
+print('cuInit =', cuInit(0))
+print('cuDriverGetVersion =', cuDriverGetVersion(ctypes.byref(v)), 'value =', v.value)
+PY
+    ;;
+  version-runtime)
+    python3 - <<'PY'
+import ctypes
+
+rt = ctypes.CDLL('libcudart.so.12')
+cudaDriverGetVersion = rt.cudaDriverGetVersion
+cudaDriverGetVersion.argtypes = [ctypes.POINTER(ctypes.c_int)]
+cudaDriverGetVersion.restype = ctypes.c_int
+cudaRuntimeGetVersion = rt.cudaRuntimeGetVersion
+cudaRuntimeGetVersion.argtypes = [ctypes.POINTER(ctypes.c_int)]
+cudaRuntimeGetVersion.restype = ctypes.c_int
+v1 = ctypes.c_int(-1)
+v2 = ctypes.c_int(-1)
+print('cudaDriverGetVersion =', cudaDriverGetVersion(ctypes.byref(v1)), 'value =', v1.value)
+print('cudaRuntimeGetVersion =', cudaRuntimeGetVersion(ctypes.byref(v2)), 'value =', v2.value)
+PY
+    ;;
   yolo-import)
     python3 - <<'PY'
 from ultralytics import YOLO
@@ -120,7 +186,7 @@ PY
     ;;
   *)
     echo "unknown mode: $MODE" >&2
-    echo "modes: shell | driver | runtime | torch | yolo-import" >&2
+    echo "modes: shell | driver | runtime | torch | versions | version-driver | version-runtime | yolo-import" >&2
     exit 2
     ;;
 esac

@@ -1,4 +1,5 @@
-#include <cuda.h>
+#include "CudaDr.h"
+
 #include <dlfcn.h>
 #include <cstdlib>
 #include <cstdio>
@@ -7,6 +8,54 @@
 #ifdef cuGetProcAddress
 #undef cuGetProcAddress
 #endif
+
+namespace {
+
+void* gvirtusResolveLocalDriverSymbol(const char* symbol)
+{
+    dlerror();
+    void* fp = dlsym(RTLD_DEFAULT, symbol);
+    if (fp) {
+        return fp;
+    }
+
+    char versionedSymbol[256];
+    if (std::snprintf(versionedSymbol, sizeof(versionedSymbol), "%s_v2", symbol) <= 0 ||
+        std::strlen(versionedSymbol) >= sizeof(versionedSymbol)) {
+        return nullptr;
+    }
+    return dlsym(RTLD_DEFAULT, versionedSymbol);
+}
+
+CUresult gvirtusQueryRemoteProcAddress(const char* symbol,
+                                       int cudaVersion,
+                                       cuuint64_t flags,
+                                       CUdriverProcAddressQueryResult* symbolStatus)
+{
+    CudaDrFrontend::Prepare();
+    CudaDrFrontend::AddVariableForArguments(symbol);
+    CudaDrFrontend::AddVariableForArguments(cudaVersion);
+    CudaDrFrontend::AddVariableForArguments(flags);
+    if (symbolStatus != nullptr) {
+        CudaDrFrontend::AddHostPointerForArguments(symbolStatus);
+    }
+    CudaDrFrontend::Execute("cuGetProcAddress");
+    if (CudaDrFrontend::Success()) {
+        static_cast<void>(CudaDrFrontend::GetOutputDevicePointer());
+        if (symbolStatus != nullptr) {
+            *symbolStatus = CudaDrFrontend::GetOutputVariable<CUdriverProcAddressQueryResult>();
+        }
+    }
+    return CudaDrFrontend::GetExitCode();
+}
+
+bool gvirtusUseMissingSymbolStubPolicy()
+{
+    const char* policy = std::getenv("GVIRTUS_CUDADR_MISSING_SYMBOL_POLICY");
+    return policy != nullptr && std::strcmp(policy, "stub") == 0;
+}
+
+}  // namespace
 
 extern "C" CUresult gvirtusUnsupportedDriverEntryPoint(
     unsigned long long arg0,
@@ -206,18 +255,28 @@ extern "C" CUresult cuGetProcAddress_v2(
         return CUDA_SUCCESS;
     }
 
-    dlerror();
-    void* fp = dlsym(RTLD_DEFAULT, symbol);
+    void* fp = gvirtusResolveLocalDriverSymbol(symbol);
 
     if (!fp) {
-        char versionedSymbol[256];
-        if (std::snprintf(versionedSymbol, sizeof(versionedSymbol), "%s_v2", symbol) > 0 &&
-            std::strlen(versionedSymbol) < sizeof(versionedSymbol)) {
-            fp = dlsym(RTLD_DEFAULT, versionedSymbol);
+        CUdriverProcAddressQueryResult remoteStatus = CU_GET_PROC_ADDRESS_SYMBOL_NOT_FOUND;
+        CUresult remoteExit = gvirtusQueryRemoteProcAddress(symbol, cudaVersion, flags, &remoteStatus);
+        const bool hostSupportsSymbol =
+            remoteExit == CUDA_SUCCESS && remoteStatus == CU_GET_PROC_ADDRESS_SUCCESS;
+
+        if (!hostSupportsSymbol || !gvirtusUseMissingSymbolStubPolicy()) {
+            if (symbolStatus) {
+                *symbolStatus = CU_GET_PROC_ADDRESS_SYMBOL_NOT_FOUND;
+            }
+            *pfn = nullptr;
+            if (trace) {
+                std::fprintf(stderr,
+                             "GVirtuS cuGetProcAddress_v2 unresolved symbol=%s cudaVersion=%d flags=%llu remoteExit=%d remoteStatus=%d\n",
+                             symbol, cudaVersion, static_cast<unsigned long long>(flags),
+                             static_cast<int>(remoteExit), static_cast<int>(remoteStatus));
+            }
+            return CUDA_SUCCESS;
         }
-    }
 
-    if (!fp) {
         fp = reinterpret_cast<void*>(&gvirtusUnsupportedDriverEntryPoint);
         if (symbolStatus) {
             *symbolStatus = CU_GET_PROC_ADDRESS_SUCCESS;
@@ -225,7 +284,7 @@ extern "C" CUresult cuGetProcAddress_v2(
         *pfn = fp;
         if (trace) {
             std::fprintf(stderr,
-                         "GVirtuS cuGetProcAddress_v2 stub symbol=%s cudaVersion=%d flags=%llu fp=%p\n",
+                         "GVirtuS cuGetProcAddress_v2 host-supported guest-stub symbol=%s cudaVersion=%d flags=%llu fp=%p\n",
                          symbol, cudaVersion, static_cast<unsigned long long>(flags), fp);
         }
         return CUDA_SUCCESS;

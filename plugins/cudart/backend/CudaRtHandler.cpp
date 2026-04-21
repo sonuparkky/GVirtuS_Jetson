@@ -38,6 +38,7 @@ extern "C" std::shared_ptr<CudaRtHandler> create_t() { return std::make_shared<C
 CudaRtHandler::CudaRtHandler() {
     logger = Logger::getInstance(LOG4CPLUS_TEXT("CudaRtHandler"));
     mpFatBinary = new map<string, void **>();
+    mpLastFatBinary = nullptr;
     mpDeviceFunction = new map<string, string>();
     mpVar = new map<string, string>();
     mpTexture = new map<string, cudaTextureObject_t *>();
@@ -72,6 +73,7 @@ void CudaRtHandler::RegisterFatBinary(std::string &handler, void **fatCubinHandl
         mpFatBinary->erase(it);
     }
     mpFatBinary->insert(make_pair(handler, fatCubinHandle));
+    mpLastFatBinary = fatCubinHandle;
     LOG4CPLUS_DEBUG(logger,
                     "Registered FatBinary " << fatCubinHandle << " with handler " << handler);
 }
@@ -83,7 +85,15 @@ void CudaRtHandler::RegisterFatBinary(const char *handler, void **fatCubinHandle
 
 void **CudaRtHandler::GetFatBinary(string &handler) {
     map<string, void **>::iterator it = mpFatBinary->find(handler);
-    if (it == mpFatBinary->end()) throw runtime_error("Fat Binary '" + handler + "' not found");
+    if (it == mpFatBinary->end()) {
+        if ((handler == "(nil)" || handler == "0x0" || handler.empty()) && mpLastFatBinary != nullptr) {
+            LOG4CPLUS_WARN(logger,
+                           "GetFatBinary fallback to last registered fat binary for handler "
+                               << handler);
+            return mpLastFatBinary;
+        }
+        throw runtime_error("Fat Binary '" + handler + "' not found");
+    }
     return it->second;
 }
 
